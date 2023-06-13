@@ -1,0 +1,1548 @@
+<!--
+    TODO
+    - [ ] add group for map, enemies, etc.
+    - [ ] adjust 3d view
+    - [ ] visible cover pixels (pixel size = 1)
+    - [ ] death animation
+    - [ ] next level (faster)
+    - [ ] sound (sfxr)
+    - [ ] mobile support
+-->
+<!DOCTYPE html>
+<style>
+body { 
+    margin: 0; 
+    font-family: pixel;
+    font-size: 18px;
+    font-weight: 500;
+    background-color: black;
+}
+#overlay {
+    position: absolute; 
+    top: 0; 
+    left: 0; 
+    color: #d3d3d3;
+    text-align: center; 
+    width: 100%;
+    margin-top: 10px;
+}
+#bottom {
+    position: absolute; 
+    bottom: 20px; 
+    left: 0; 
+    color: #d3d3d3;
+    text-align: center; 
+    width: 100%;
+    margin-top: 10px;
+}
+.blink {
+    animation: blinker 1s step-start infinite;
+}
+@keyframes blinker {
+    0% { opacity: 0; }
+    80% { opacity: 1; }
+    100% { opacity: 0; }
+}
+@font-face {
+    font-family: pixel;
+    src: url('./PixelOperatorMono8.ttf');
+}
+</style>
+<body>
+    <p id="overlay"></p>
+    <p id="debug" style="position: absolute; top: 32px; left: 0; color: white; "></p>
+    <p id="bottom" class="blink">JAVASCRIPT IS REQUIRED TO PLAY SPACE INVADERS</p>
+</body>
+<script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.152.2/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.152.2/examples/jsm/"
+    }
+  }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+const pixelSize = 0.125
+const pixelHeight = 2 * pixelSize
+// setup camera
+const cameraSpeed = 0.1
+const rotateSpeed = 0.03
+const cameraFov = 70
+const cameraAspect = window.innerWidth / window.innerHeight
+const cameraNear = 0.01
+const cameraFar = 1000
+
+const camera = new THREE.PerspectiveCamera( cameraFov, cameraAspect, cameraNear, cameraFar );
+camera.position.y = 1;
+camera.position.z = 2;
+camera.position.x = 2;
+let cameraFollowsPlayer = false
+setAxonometricCamera()
+const scene = new THREE.Scene();
+const coverColor = 0xFF00FF00
+
+// draw map from boxes
+let map
+let boxes = []
+let mapGroup = makeMapGroup()
+function makeMapGroup() {
+    map = [
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '  W^|W    W^|W    W^|W    W^|W  ',
+        '  WWWW    WWWW    WWWW    WWWW  ',
+        '  ?WW/    ?WW/    ?WW/    ?WW/  ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+        '                                ',
+    ]
+
+    const slopePixels = [
+        "O       ",
+        "OO      ",
+        "OOO     ",
+        "OOOO    ",
+        "OOOOO   ",
+        "OOOOOO  ",
+        "OOOOOOO ",
+        "OOOOOOOO",
+    ]
+    const underSlopePixels = [
+        "    OOOO",
+        "     OOO",
+        "      OO",
+        "       O",
+        "        ",
+        "        ",
+        "        ",
+        "        ",
+    ]
+    const fullPixels = [
+        "OOOOOOOO",
+        "OOOOOOOO",
+        "OOOOOOOO",
+        "OOOOOOOO",
+        "OOOOOOOO",
+        "OOOOOOOO",
+        "OOOOOOOO",
+        "OOOOOOOO",
+    ]
+    const pixelMap = {
+        '/': slopePixels,
+        '?': mirrorPixelsHorizontally(slopePixels), 
+        '|': underSlopePixels, 
+        '^': mirrorPixelsHorizontally(underSlopePixels),
+        'W': fullPixels,
+    }
+
+    const mapGroup = new THREE.Group()
+    for (let y = 0; y < map.length; y++) {
+        const line = map[y]
+        for (let x = 0; x < line.length; x++) {
+            const item = line[x]
+            const pixels = pixelMap[item]
+            if (!pixels) {
+                continue
+            }
+
+            const boxMesh = makeMeshFromPixels(pixels, pixelSize, 0, coverColor)
+            boxMesh.position.x = x
+            boxMesh.position.z = y
+            boxMesh.position.y = 1
+            mapGroup.add( boxMesh );
+            boxes[x + y * line.length] = boxMesh
+        }
+    }
+    return mapGroup
+}
+
+function removeMap() {
+    boxes = []
+    scene.remove(mapGroup)    
+}
+
+function addMap() {
+    mapGroup = makeMapGroup()
+    scene.add(mapGroup)
+}
+
+function mirrorPixelsVertically(pixels) {
+    return pixels.slice().reverse()
+}
+
+function mirrorPixelsHorizontally(pixels) {
+    return pixels.map(v => v.split('').reverse().join(''))
+}
+
+function isSolid(x, y) {
+    const width = map[0].length
+    const height = Math.floor(map.length)
+
+    if (x < 0 || x >= width || y < 0 || y >= height) {
+        return false
+    }
+
+    x = Math.floor(x)
+    y = Math.floor(y)
+
+    const line = map[y]
+    if (typeof line == 'undefined') return false
+
+    return line[x] !== ' '
+}
+
+function isWall(x, y) {
+    const width = map[0].length
+    const height = Math.floor(map.length)
+
+    if (x < 0 || x >= width || y < 0 || y >= height) {
+        return false
+    }
+
+    x = Math.floor(x)
+    y = Math.floor(y)
+
+    const line = map[y]
+    if (typeof line == 'undefined') return false
+
+    return line[x] !== ' '
+}
+
+function nextWallState(item) {
+    switch (item) {
+        case 'W': return 'w'
+        case 'w': return '_'
+        case '_': return '.'
+        case '.': return ' '
+        case '/': return '%'
+        case '?': return '!'
+        case '%': return ' '
+        case '!': return ' '
+        case '|': return '#'
+        case '#': return ' '
+        case '^': return '&'
+        case '&': return ' '
+    }
+}
+
+function wallPixels(item) {
+    const rubblePixels = [
+        "        ",
+        "        ",
+        "O       ",
+        "        ",
+        "        ",
+        "O       ",
+        "   O    ",
+        "O OO   O",
+    ]
+    const id = (i) => i
+    const orientation = Math.random() < 0.5 ? id : mirrorPixelsHorizontally
+    const map = {
+        'w': orientation([
+            "OOO  OOO",
+            "OO    OO",
+            "OOO  OOO",
+            "OO  O OO",
+            "OOOOOOOO",
+            "OOOO OOO",
+            "OOOOOOOO",
+            "OOOOOOOO",
+        ])
+        ,
+        '_': orientation([
+            "OOO    O",
+            "OO    OO",
+            "OOO    O",
+            "OO    OO",
+            "OO     O",
+            "OOO   OO",
+            "OOO  OOO",
+            "OOOOOOOO",
+        ])
+        ,
+        '.': orientation([
+            "O       ",
+            " O      ",
+            "        ",
+            "        ",
+            "        ",
+            "O       ",
+            "       O",
+            "O      O",
+        ])
+        ,
+        '%': rubblePixels,
+        '!': mirrorPixelsHorizontally(rubblePixels),
+        '#': mirrorPixelsHorizontally(mirrorPixelsVertically(rubblePixels)),
+        '&': mirrorPixelsVertically(rubblePixels),
+    }
+    return map[item]
+}
+
+function weakenWall(x, y) {
+    x = Math.floor(x)
+    y = Math.floor(y)
+
+    let line = map[y]
+    if (typeof line == 'undefined') return
+
+    const wall = map[y][x]
+    if (wall !== ' ') {
+        const nextWall = nextWallState(wall)
+        if (!nextWall) {
+            return
+        }
+
+        if (nextWall !== ' ') {
+            const index = x + y * map[0].length 
+            const box = boxes[index]
+            delete boxes[index]
+            mapGroup.remove(box)
+
+            const pixels = wallPixels(nextWall)
+            if (!pixels) {
+                return
+            }
+
+            const boxMesh = makeMeshFromPixels(pixels, pixelSize, 0, coverColor)
+            boxMesh.position.x = x
+            boxMesh.position.z = y
+            boxMesh.position.y = 1
+            mapGroup.add( boxMesh );
+            boxes[x + y * line.length] = boxMesh
+
+            // remove mesh from above if it is already non-wall
+            if (y < map.length - 2 && !isWall(x, y + 1)) {
+                const aboveIndex = x + (y + 1) * map[0].length
+                const aboveBox = boxes[aboveIndex]
+                if (aboveBox) {
+                    delete boxes[aboveIndex]
+                    mapGroup.remove(aboveBox)
+                    const aboveLine = map[y + 1]
+                    map[y + 1] = aboveLine.slice(0, x) + ' ' + aboveLine.slice(x + 1)
+                }
+            }
+        }
+
+        // line is read-only, so we have to modify like this
+        map[y] = line.slice(0, x) + nextWall + line.slice(x + 1)
+    }
+}
+
+function makeMeshFromPixels(pixels, size, score = 0, color = 0xFFFFFFFF, xsign = 1) {
+    const boxGeometries = []
+    for (let y = 0; y < pixels.length; y++) {
+        const line = pixels[pixels.length - 1 - y]
+        for (let x = 0; x < line.length; x++) {
+            const item = line[x]
+            if (item == 'O') {
+                const boxGeometry = new THREE.BoxGeometry( size, pixelHeight, size);
+                boxGeometry.translate(xsign * (x * size + size / 2), 0, y * size + size / 2)
+                boxGeometries.push(boxGeometry)
+            }
+        }
+    }
+
+    const boxMaterial = new THREE.MeshMatcapMaterial( {color } );
+
+    const mergedGeometry = BufferGeometryUtils.mergeGeometries(boxGeometries, false)
+    const mesh = new THREE.Mesh(mergedGeometry, boxMaterial)
+
+    // this is here so that we can easily replace a mesh of an enemy
+    const group = new THREE.Group()
+    group.add(mesh)
+
+    // TODO get rid of userData
+    group.userData = {
+        score,
+        size,
+    }
+
+    return group
+}
+
+function makeFromFrames(frames, size, score) {
+    const mesh = makeMeshFromPixels(frames[0], size)
+    mesh.position.y = 1
+    mesh.userData = {
+        score,
+        size,
+        currentFrame: 0,
+        frames,
+    }
+    return mesh
+}
+
+function makeSplashScreen() {
+    const alphabetS = [
+        "  OOO  ",
+        " OOOOO ",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO    ",
+        " OOOOO ",
+        "  OOOOO",
+        "    OOO",
+        "OOO OOO",
+        "OOO OOO",
+        " OOOOO ",
+        "  OOO  ",
+    ]
+    const alphabetP = [
+        "OOOOO  ",
+        "OOOOOO ",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOOOOO ",
+        "OOOOO  ",
+        "OOO    ",
+        "OOO    ",
+        "OOO    ",
+        "OOO    ",
+    ]
+    const alphabetA = [
+        "  OOO  ",
+        "  OOO  ",
+        "  OOO  ",
+        " OO OO ",
+        " OO OO ",
+        " OO OO ",
+        " OO OO ",
+        " OOOOO ",
+        "OOOOOOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+    ]
+    const alphabetC = [
+        "  OOO  ",
+        " OOOOO ",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO    ",
+        "OOO    ",
+        "OOO    ",
+        "OOO    ",
+        "OOO OOO",
+        "OOO OOO",
+        " OOOOO ",
+        "  OOO  ",
+    ]
+    const alphabetE = [
+        "OOOOOOO",
+        "OOOOOOO",
+        "OOO    ",
+        "OOO    ",
+        "OOO    ",
+        "OOOOOO ",
+        "OOOOOO ",
+        "OOO    ",
+        "OOO    ",
+        "OOO    ",
+        "OOOOOOO",
+        "OOOOOOO",
+    ]
+    const alphabetI = [
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+        " OOO ",
+    ]
+    const alphabetN = [
+        "OO   OO",
+        "OOO  OO",
+        "OOO  OO",
+        "OOOO OO",
+        "OOOO OO",
+        "OOOOOOO",
+        "OOOOOOO",
+        "OO OOOO",
+        "OO OOOO",
+        "OO  OOO",
+        "OO  OOO",
+        "OO   OO",
+    ]
+    const alphabetV = [
+        "OO   OO",
+        "OO   OO",
+        "OO   OO",
+        "OOO OOO",
+        " OO OO ",
+        " OO OO ",
+        " OO OO ",
+        " OO OO ",
+        " OOOOO ",
+        "  OOO  ",
+        "  OOO  ",
+        "  OOO  ",
+    ]
+    const alphabetR = [
+        "OOOOO  ",
+        "OOOOOO ",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOOOOO ",
+        "OOOOO  ",
+        "OOOOOO ",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+    ]
+
+    const alphabet3 = [
+        "  OOO  ",
+        " OOOOO ",
+        "OOO OOO",
+        "OOO OOO",
+        "    OO ",
+        "   OOO ",
+        "   OOO ",
+        "    OO ",
+        "OOO OOO",
+        "OOO OOO",
+        " OOOOO ",
+        "  OOO  ",
+    ]
+    const alphabetD = [
+        "OOOOO  ",
+        "OOOOOO ",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOO OOO",
+        "OOOOOO ",
+        "OOOOO  ",
+    ]
+
+    const size = pixelSize * 2
+    const letterWidth = size * 8
+    const letterHeight = size * 12 + size
+    const color = 0xFFFFFF00
+    const makeLetter = (letter) => makeMeshFromPixels(letter, size, 0, color, -1)
+    const letters = [
+        makeLetter(alphabetS).translateX(6 * letterWidth),
+        makeLetter(alphabetP).translateX(5 * letterWidth),
+        makeLetter(alphabetA).translateX(4 * letterWidth),
+        makeLetter(alphabetC).translateX(3 * letterWidth),
+        makeLetter(alphabetE).translateX(2 * letterWidth),
+
+        makeLetter(alphabetI).translateX(7.2 * letterWidth).translateZ(-letterHeight),
+        makeLetter(alphabetN).translateX(6.5 * letterWidth).translateZ(-letterHeight),
+        makeLetter(alphabetV).translateX(5.5 * letterWidth).translateZ(-letterHeight),
+        makeLetter(alphabetA).translateX(4.5 * letterWidth).translateZ(-letterHeight),
+        makeLetter(alphabetD).translateX(3.5 * letterWidth).translateZ(-letterHeight),
+        makeLetter(alphabetE).translateX(2.5 * letterWidth).translateZ(-letterHeight),
+        makeLetter(alphabetR).translateX(1.5 * letterWidth).translateZ(-letterHeight),
+        makeLetter(alphabetS).translateX(0.5 * letterWidth).translateZ(-letterHeight),
+
+        makeLetter(alphabetD).translateX(3.5 * letterWidth).translateZ(-2 * letterHeight),
+        makeLetter(alphabet3).translateX(4.5 * letterWidth).translateZ(-2 * letterHeight),
+    ]
+
+    const group = new THREE.Group()
+    group.rotateX(-1.6).translateX(9).translateZ(9).translateY(-2)
+    letters.forEach(letter => group.add(letter))
+    scene.add(group)
+    return group
+}
+
+const projectilePixels1 = [
+    "O",
+    "O",
+    "O",
+    "O",
+]
+
+const projectileFrames2 = [
+    [
+        "  O",
+        " O ",
+        "O  ",
+        " O ",
+        "  O",
+        " O ",
+        "O  ",
+    ]
+    ,
+    [
+        " O ",
+        "O  ",
+        " O ",
+        "  O",
+        " O ",
+        "O  ",
+        " O ",
+    ]
+    ,
+    [
+        "O  ",
+        " O ",
+        "  O",
+        " O ",
+        "O  ",
+        " O ",
+        "  O",
+    ]
+    ,
+    [
+        " O ",
+        "O  ",
+        " O ",
+        "  O",
+        " O ",
+        "O  ",
+        " O ",
+    ]
+]
+
+const projectileFrames3 = [
+    [
+        " O ",
+        " O ",
+        " O ",
+        "OOO",
+        " O ",
+        " O ",
+    ]
+    ,
+    [
+        " O ",
+        " O ",
+        "OOO",
+        " O ",
+        " O ",
+        " O ",
+    ]
+    ,
+    [
+        "OOO",
+        " O ",
+        " O ",
+        " O ",
+        " O ",
+        " O ",
+    ]
+    ,
+    [
+        " O ",
+        " O ",
+        " O ",
+        " O ",
+        " O ",
+        "OOO",
+    ]
+]
+
+const playerWidth = 13 * pixelSize
+const playerHeight = 8 * pixelSize
+function makePlayer(size) {
+    const pixels = [
+        "      O      ",
+        "     OOO     ",
+        "     OOO     ",
+        " OOOOOOOOOOO ",
+        "OOOOOOOOOOOOO",
+        "OOOOOOOOOOOOO",
+        "OOOOOOOOOOOOO",
+        "OOOOOOOOOOOOO",
+    ]
+
+    return makeMeshFromPixels(pixels, size, 0, 0xFF00FF00)
+}
+
+function makeExplosion(size, visible, color = 0xFFFFFFFF) {
+    const explosionPixels = [
+        "    O   O    ",
+        " O   O O   O ",
+        "  O       O  ",
+        "   O     O   ",
+        "OO         OO",
+        "   O     O   ",
+        "  O       O  ",
+        " O   O O   O ",
+        "    O   O    ",
+    ]
+
+    const object = makeMeshFromPixels(explosionPixels, size, 0, color)
+    return {
+        object,
+        visible,
+    }
+}
+
+function makeEnemy1(size) {
+    const pixels = [
+        "  O     O  ",
+        "   O   O   ",
+        "  OOOOOOO  ",
+        " OO OOO OO ",
+        "OOOOOOOOOOO",
+        "O OOOOOOO O",
+        "O O     O O",
+        "   OO OO   ",
+    ]
+    const pixels2 = [
+        "  O     O  ",
+        "O  O   O  O",
+        "O OOOOOOO O",
+        "OOO OOO OOO",
+        "OOOOOOOOOOO",
+        "  OOOOOOO  ",
+        "  O     O  ",
+        " O       O ",
+
+    ]
+    return makeFromFrames([pixels, pixels2], size, 20)
+}
+
+function makeEnemy2(size) {
+    const pixels = [
+        "    OOOO    ",
+        " OOOOOOOOOO ",
+        "OOOOOOOOOOOO",
+        "OOO  OO  OOO",
+        "OOOOOOOOOOOO",
+        "   OO  OO   ",
+        "  OO OO OO  ",
+        "OO        OO",
+    ]
+    const pixels2 = [
+        "    OOOO    ",
+        " OOOOOOOOOO ",
+        "OOOOOOOOOOOO",
+        "OOO  OO  OOO",
+        "OOOOOOOOOOOO",
+        "  OOO  OOO  ",
+        " OO  OO  OO ",
+        "  OO    OO  ",
+    ]
+    return makeFromFrames([pixels, pixels2], size, 10)
+}
+
+function makeEnemy3(size) {
+    const pixels = [
+        "    OO    ",
+        "   OOOO   ",
+        "  OOOOOO  ",
+        " OO OO OO ",
+        " OOOOOOOO ",
+        "   O  O   ",
+        "  O OO O  ",
+        " O O  O O ",
+    ]
+    const pixels2 = [
+        "    OO    ",
+        "   OOOO   ",
+        "  OOOOOO  ",
+        " OO OO OO ",
+        " OOOOOOOO ",
+        "  O OO O  ",
+        " O      O  ",
+        "  O    O ",
+    ]
+
+    return makeFromFrames([pixels, pixels2], size, 30)
+}
+
+function makeUfo(size, score) {
+    const pixels = [
+        "     OOOOO     ",
+        "   OOOOOOOOO   ",
+        "  OOOOOOOOOOO  ",
+        " OO O O O O OO ",
+        "OOOOOOOOOOOOOOO",
+        "  OOO OOO OOO  ",
+        "   O       O   ",
+    ]
+    
+    const mesh = makeMeshFromPixels(pixels, size, score, 0xFFFF0000)
+    mesh.position.y = 1
+    
+    return mesh
+}
+
+function nextEnemyState(state, steps, nextState) {
+    const leftRightSteps = 80
+    switch (state) {
+        case 'left': return steps >= leftRightSteps ? 
+            { state: 'down', steps: 0, nextState: 'right' } : 
+            { state: 'left', steps: steps + 1, nextState: 'left' }
+        case 'down': return { state: nextState, steps: 0, nextState: nextState }
+        case 'right': return steps >= leftRightSteps ?
+            { state: 'down', steps: 0, nextState: 'left' } :
+            { state: 'right', steps: steps + 1, nextState: 'right' }
+    }
+    return { state: 'left', steps: 0, nextState }
+}
+
+let score = 0
+const extraLifeScore = 1000
+let nextExtraLifeScore = extraLifeScore
+let highScore = localStorage.getItem('highScore') || 0
+const maxLives = 3
+let lives = maxLives
+let level = 1
+let hitState = 0
+let enemyMoveState = {
+    nextStateAt: 0,
+    state: 'left',
+    nextState: 'left',
+    steps: 0,
+}
+let enemies = []
+const enemiesGroup = new THREE.Group()
+scene.add(enemiesGroup)
+const maxEnemies = 55
+let numEnemies = 0
+const numEnemiesPerRow = 11
+
+let ufo = {
+    visible: false,
+    x: 1,
+    object: undefined,
+    nextStateAt: 0,
+    scoreIndex: 0,
+}
+// copied from here: https://www.computerarcheology.com/Arcade/SpaceInvaders/
+const ufoScores = [100, 50, 50, 100, 150, 100, 100, 50, 300, 100, 100, 100, 50, 150, 100, 50]
+
+function addEnemies() {
+    enemies = [
+        makeEnemy3(pixelSize).translateZ(19).translateX(1),
+        makeEnemy3(pixelSize).translateZ(19).translateX(3),
+        makeEnemy3(pixelSize).translateZ(19).translateX(5),
+        makeEnemy3(pixelSize).translateZ(19).translateX(7),
+        makeEnemy3(pixelSize).translateZ(19).translateX(9),
+        makeEnemy3(pixelSize).translateZ(19).translateX(11),
+        makeEnemy3(pixelSize).translateZ(19).translateX(13),
+        makeEnemy3(pixelSize).translateZ(19).translateX(15),
+        makeEnemy3(pixelSize).translateZ(19).translateX(17),
+        makeEnemy3(pixelSize).translateZ(19).translateX(19),
+        makeEnemy3(pixelSize).translateZ(19).translateX(21),
+
+        makeEnemy1(pixelSize).translateZ(17).translateX(1),
+        makeEnemy1(pixelSize).translateZ(17).translateX(3),
+        makeEnemy1(pixelSize).translateZ(17).translateX(5),
+        makeEnemy1(pixelSize).translateZ(17).translateX(7),
+        makeEnemy1(pixelSize).translateZ(17).translateX(9),
+        makeEnemy1(pixelSize).translateZ(17).translateX(11),
+        makeEnemy1(pixelSize).translateZ(17).translateX(13),
+        makeEnemy1(pixelSize).translateZ(17).translateX(15),
+        makeEnemy1(pixelSize).translateZ(17).translateX(17),
+        makeEnemy1(pixelSize).translateZ(17).translateX(19),
+        makeEnemy1(pixelSize).translateZ(17).translateX(21),
+
+        makeEnemy1(pixelSize).translateZ(15).translateX(1),
+        makeEnemy1(pixelSize).translateZ(15).translateX(3),
+        makeEnemy1(pixelSize).translateZ(15).translateX(5),
+        makeEnemy1(pixelSize).translateZ(15).translateX(7),
+        makeEnemy1(pixelSize).translateZ(15).translateX(9),
+        makeEnemy1(pixelSize).translateZ(15).translateX(11),
+        makeEnemy1(pixelSize).translateZ(15).translateX(13),
+        makeEnemy1(pixelSize).translateZ(15).translateX(15),
+        makeEnemy1(pixelSize).translateZ(15).translateX(17),
+        makeEnemy1(pixelSize).translateZ(15).translateX(19),
+        makeEnemy1(pixelSize).translateZ(15).translateX(21),
+
+        makeEnemy2(pixelSize).translateZ(13).translateX(1),
+        makeEnemy2(pixelSize).translateZ(13).translateX(3),
+        makeEnemy2(pixelSize).translateZ(13).translateX(5),
+        makeEnemy2(pixelSize).translateZ(13).translateX(7),
+        makeEnemy2(pixelSize).translateZ(13).translateX(9),
+        makeEnemy2(pixelSize).translateZ(13).translateX(11),
+        makeEnemy2(pixelSize).translateZ(13).translateX(13),
+        makeEnemy2(pixelSize).translateZ(13).translateX(15),
+        makeEnemy2(pixelSize).translateZ(13).translateX(17),
+        makeEnemy2(pixelSize).translateZ(13).translateX(19),
+        makeEnemy2(pixelSize).translateZ(13).translateX(21),
+
+        makeEnemy2(pixelSize).translateZ(11).translateX(1),
+        makeEnemy2(pixelSize).translateZ(11).translateX(3),
+        makeEnemy2(pixelSize).translateZ(11).translateX(5),
+        makeEnemy2(pixelSize).translateZ(11).translateX(7),
+        makeEnemy2(pixelSize).translateZ(11).translateX(9),
+        makeEnemy2(pixelSize).translateZ(11).translateX(11),
+        makeEnemy2(pixelSize).translateZ(11).translateX(13),
+        makeEnemy2(pixelSize).translateZ(11).translateX(15),
+        makeEnemy2(pixelSize).translateZ(11).translateX(19),
+        makeEnemy2(pixelSize).translateZ(11).translateX(17),
+        makeEnemy2(pixelSize).translateZ(11).translateX(21),
+    ]
+
+    enemies.forEach(enemy => enemiesGroup.add(enemy))
+    numEnemies = enemies.length
+}
+
+function removeEnemies() {
+    numEnemies = 0
+    enemies = new Array(maxEnemies)
+    enemiesGroup.clear()
+}
+
+// rows are ordered from bottom to top
+function getEnemy(row, col) {
+    const numRows = Math.floor(maxEnemies / numEnemiesPerRow)
+    return enemies[(numRows - 1 - row) * numEnemiesPerRow + col]
+}
+
+function getBottomEnemyFromColumn(col) {
+    const numRows = maxEnemies / numEnemiesPerRow
+    for (let i = 0; i < numRows; i++) {
+        const enemy = getEnemy(i, col)
+        if (enemy) {
+            return enemy
+        }
+    }
+}
+
+function animateEnemy(enemy) {
+    if (typeof enemy.userData.frames === 'object') {
+        enemy.userData.currentFrame = animate(enemy, enemy.userData.frames, enemy.userData.currentFrame)
+    }
+}
+
+function animate(group, frames, currentFrame) {
+    const nextFrame = (currentFrame + 1) % frames.length
+    group.clear()
+
+    const mesh = makeMeshFromPixels(frames[nextFrame], pixelSize)
+    group.add(mesh)
+
+    return nextFrame
+}
+
+// add ground plane
+let groundPlane
+{
+    const planeGeometry = new THREE.PlaneGeometry( 1000, 1000 );
+    // const planeMaterial = new THREE.MeshBasicMaterial( {color: 0xFF505050} );
+    const planeMaterial = new THREE.MeshBasicMaterial( {color: 0xFF0000000} );
+    groundPlane = new THREE.Mesh( planeGeometry, planeMaterial );
+    groundPlane.rotation.x = 3 * Math.PI / 2
+    scene.add( groundPlane );
+}
+
+// add ground plane
+let gameAreaPlane
+{
+    const planeGeometry = new THREE.PlaneGeometry( 32, 32 );
+    const planeMaterial = new THREE.MeshBasicMaterial( {color: 0xFF0000000} );
+    gameAreaPlane = new THREE.Mesh( planeGeometry, planeMaterial );
+    gameAreaPlane.rotation.x = 3 * Math.PI / 2
+    gameAreaPlane.position.x = 16
+    gameAreaPlane.position.y = 1
+    gameAreaPlane.position.z = 16
+    scene.add( gameAreaPlane );
+}
+
+
+// add sky plane
+{
+    const planeGeometry = new THREE.PlaneGeometry( 1000, 1000 );
+    const planeMaterial = new THREE.MeshBasicMaterial( {color: 0x0000FF} );
+    const skyPlane = new THREE.Mesh( planeGeometry, planeMaterial );
+    skyPlane.rotation.x = Math.PI / 2
+    skyPlane.position.y = 2
+    scene.add( skyPlane );
+}
+
+// add player
+let player = makePlayer(pixelSize)
+{
+    player.position.x = 16
+    player.position.y = 1
+    player.position.z = 1
+}
+
+let projectiles = []
+let lastProjectileFrame = 0
+const playerProjectileSpeed = 2 * pixelSize
+let enemyProjectile
+const enemyProjectileSpeed = pixelSize
+let explosions = []
+let nextEnemy = 0
+let splashScreen
+
+// scene.add( new THREE.AxesHelper( 20 ) );
+const renderer = new THREE.WebGLRenderer( { antialias: true } );
+renderer.setSize( window.innerWidth, window.innerHeight );
+renderer.setAnimationLoop( animation );
+document.body.appendChild( renderer.domElement );
+
+function findNextEnemy() {
+    for (let i = nextEnemy; i < maxEnemies; i++) {
+        nextEnemy = i + 1
+        if (enemies[i]) {
+            return enemies[i]
+        }
+    }
+}
+
+function makeProjectile(shooter, pixels, xoffset = 0, zoffset = 0) {
+    const projectile = makeMeshFromPixels(pixels, pixelSize, 0)
+
+    projectile.position.x = shooter.position.x + xoffset
+    projectile.position.y = shooter.position.y
+    projectile.position.z = shooter.position.z + zoffset
+
+    projectile.rotation.x = shooter.rotation.x
+    projectile.rotation.y = shooter.rotation.y
+    projectile.rotation.z = shooter.rotation.z
+
+    scene.add(projectile)
+    return projectile
+}
+
+function playerShootProjectile() {
+    const projectile = makeProjectile(player, projectilePixels1, (playerWidth - pixelSize) / 2, playerHeight)
+    projectiles.push(projectile)
+}
+
+function enemyShootProjectile(enemy) {
+    // make projectile speed 20% faster if there are less than 9 enemies
+    const baseSpeed = numEnemies > 9 ? enemyProjectileSpeed : enemyProjectileSpeed * 1.2
+    const difficultyModifier = 2 - ((10 - level)/10)
+    const projectileSpeed = difficultyModifier * baseSpeed
+    
+    const frames = Math.random() < 0.5 ? projectileFrames2 : projectileFrames3
+    enemyProjectile = makeProjectile(enemy, frames[0], 3 * pixelSize)
+    enemyProjectile.userData.frames = frames
+    enemyProjectile.userData.frameState = 4
+    enemyProjectile.userData.currentFrame = 0
+    enemyProjectile.userData.projectileSpeed = projectileSpeed
+}
+
+function setAxonometricCamera() {
+    cameraFollowsPlayer = false
+    camera.position.x = 16
+    camera.position.y = 14
+    camera.position.z = -4
+    camera.lookAt(16, 0, 8)
+}
+
+function setTopDownCamera() {
+    cameraFollowsPlayer = false
+    camera.position.x = 16
+    camera.position.y = 24
+    camera.position.z = 16
+    camera.up = new THREE.Vector3(0,0,1)
+    camera.lookAt(16, 0, 16)
+}
+
+function setPlayerCamera() {
+    camera.position.x = player.position.x
+    camera.position.y = player.position.y
+    camera.position.z = player.position.z
+
+    camera.rotation.x = player.rotation.x
+    camera.rotation.y = (player.rotation.y - Math.PI)
+    camera.rotation.z = player.rotation.z
+    camera.rotation.order = player.rotation.order
+}
+
+function setPosition(obj, pos) {
+    obj.position.x = pos.x
+    obj.position.y = pos.y
+    obj.position.z = pos.z
+}
+
+let gameState = 'splashscreen' // can be 'splashscreen' | 'gameplay' | 'gameover' | 'winlevel'
+let paused = false
+const keys = {
+    forward: false,
+    backward: false,
+    left: false,
+    right: false,
+    strafeLeft: false,
+    strafeRight: false,
+    shoot: false,
+}
+
+window.addEventListener('keydown', function(e) {
+    switch (e.code) {
+        case 'ArrowLeft': keys.strafeLeft = true; break
+        case 'ArrowRight': keys.strafeRight = true; break
+        case 'KeyA': keys.strafeLeft = true; break
+        case 'KeyD': keys.strafeRight = true; break
+        case 'Space': keys.shoot = true; break
+    }
+})
+
+window.addEventListener('keyup', function(e) {
+    switch (e.code) {
+        case 'ArrowLeft': keys.strafeLeft = false; break
+        case 'ArrowRight': keys.strafeRight = false; break
+        case 'KeyA': keys.strafeLeft = false; break
+        case 'KeyD': keys.strafeRight = false; break
+        case 'Space': keys.shoot = false; break
+        case 'KeyP': paused = !paused; break
+        case 'KeyV': setAxonometricCamera(); break
+        case 'KeyR': setTopDownCamera(); break
+    }
+})
+
+let debug = ''
+let debugCounter = 500
+let intersectionPoint
+const raycaster = new THREE.Raycaster()
+const pointer = new THREE.Vector2()
+window.addEventListener('pointermove', event => {
+    pointer.x = ( event.clientX / window.innerWidth ) * 2 - 1
+    pointer.y =  - ( event.clientY / window.innerHeight ) * 2 + 1
+    raycaster.setFromCamera(pointer, camera)
+    const intersection = raycaster.intersectObject(gameAreaPlane)
+    if (intersection.length > 0) {
+        const point = intersection[0].point
+        intersectionPoint = point
+        const py = Math.floor(point.z * 8)
+        const px = Math.floor(point.x * 8)
+        const y = Math.floor(point.z)
+        const x = Math.floor(point.x)
+        const elem = map[y][x]
+        debug = `x: ${x} y: ${y} ${elem} px: ${px} py: ${py} fps: ${fps}`
+        debugCounter = 500
+    }
+})
+window.addEventListener('mouseup', event => {
+    if (!intersectionPoint || enemyProjectile) {
+        return
+    }
+
+    const projectile = makeMeshFromPixels(projectileFrames2[0], pixelSize, 0)
+
+    projectile.position.x = intersectionPoint.x
+    projectile.position.y = 1
+    projectile.position.z = intersectionPoint.z
+
+    projectile.rotation.x = 0
+    projectile.rotation.y = 0
+    projectile.rotation.z = 0
+
+    scene.add(projectile)
+
+    enemyProjectile = projectile
+    enemyProjectile.userData.frames = projectileFrames2
+    enemyProjectile.userData.frameState = 4
+    enemyProjectile.userData.currentFrame = 0
+    enemyProjectile.userData.projectileSpeed = 0.1 * enemyProjectileSpeed
+})
+
+window.addEventListener( 'resize', function () {
+    camera.aspect = window.innerWidth / window.innerHeight
+    camera.updateProjectionMatrix()
+
+    renderer.setSize( window.innerWidth, window.innerHeight )
+})
+
+function updateScene() {
+    // movement
+    if (keys.forward) {
+        player.translateZ(cameraSpeed)
+    } else if (keys.backward) {
+        player.translateZ(-cameraSpeed)
+    }
+    if (keys.strafeLeft) {
+        player.translateX(cameraSpeed)
+    } else if (keys.strafeRight) {
+        player.translateX(-cameraSpeed)
+    }
+
+    if (keys.left) {
+        player.rotateY(rotateSpeed)
+    } else if (keys.right) {
+        player.rotateY(-rotateSpeed)
+    }
+
+    if (keys.shoot) {
+        if (projectiles.length === 0 && frame - lastProjectileFrame > 30) {
+            playerShootProjectile()
+            lastProjectileFrame = frame
+        }
+    }
+
+    if (cameraFollowsPlayer) {
+        setPlayerCamera()
+    }
+
+    if (hitState > 0) {
+        hitState -= 1
+        if (hitState === 0) {
+            groundPlane.material.color.setHex(0x000000)
+        }
+    }
+
+    if (!enemyProjectile && Math.random() < (0.5 + 0.5 * ((maxEnemies - numEnemies) / maxEnemies))) {
+        const column = Math.floor(Math.random() * numEnemiesPerRow)
+        const enemy = getBottomEnemyFromColumn(column)
+        if (enemy) {
+            enemyShootProjectile(enemy)
+        }
+    }
+
+    if (!ufo.visible) {
+        if (Math.random() < 0.0005) {
+            ufo.visible = true
+            ufo.x = 0
+            ufo.object = makeUfo(pixelSize, ufoScores[ufo.scoreIndex]).translateZ(22).translateX(1)
+            ufo.scoreIndex = (ufo.scoreIndex + 1) % ufoScores.length
+            ufo.nextStateAt = 0
+            scene.add(ufo.object)
+        }
+    }
+
+    // remove explosions after waiting
+    explosions.filter(explosion => {
+        explosion.visible -= 1
+        if (explosion.visible === 0) {
+            scene.remove(explosion.object)
+            return false
+        }
+    })
+
+    projectiles = projectiles.filter(proj => {
+        // first update the position
+        proj.translateZ(playerProjectileSpeed)
+
+        if (proj.position.x >= map[0].length || proj.position.x < 0 || proj.position.z >= map.length || proj.position.z < 0) {
+            scene.remove(proj)
+            return false
+         }
+
+        if (isWall(proj.position.x, proj.position.z)) {
+            scene.remove(proj)
+            weakenWall(proj.position.x, proj.position.z)
+            return false
+        }
+        
+        if (isSolid(proj.position.x, proj.position.z)) {
+            weakenWall(proj.position.x, proj.position.z)
+        }
+
+        for (let i = 0; i < enemies.length; i++) {
+            const enemy = enemies[i]
+            if (!enemy) {
+                continue
+            }
+            const enemyBox = new THREE.Box3().setFromObject(enemy)
+            if (enemyBox.distanceToPoint(proj.position) < pixelSize) {
+                score += enemy.userData.score
+
+                const explosion = makeExplosion(pixelSize, 3)
+                setPosition(explosion.object, enemy.position)
+                scene.add(explosion.object)
+                explosions.push(explosion)
+
+                enemiesGroup.remove(enemy)
+                delete enemies[i]
+                numEnemies -= 1
+
+                scene.remove(proj)
+                return false
+            }
+        }
+
+        if (ufo.visible) {
+            const enemyBox = new THREE.Box3().setFromObject(ufo.object)
+            if (enemyBox.distanceToPoint(proj.position) < pixelSize) {
+                score += ufo.object.userData.score
+                ufo.visible = false
+
+                const explosion = makeExplosion(pixelSize, 3, 0xFFFF0000)
+                setPosition(explosion.object, ufo.object.position)
+                scene.add(explosion.object)
+                explosions.push(explosion)
+
+                scene.remove(ufo.object)
+                delete ufo.object
+                scene.remove(proj)
+                return false
+            }
+        }
+        
+        if (enemyProjectile) {
+            // shoot enemy projectiles
+            if (proj.position.distanceTo(enemyProjectile.position) < 2 * pixelSize) {
+                scene.remove(enemyProjectile)
+                enemyProjectile = undefined
+
+                scene.remove(proj)
+                return false
+            }
+        }
+
+        return true
+    })
+
+    // enemy projectile
+    while (enemyProjectile) {
+        const proj = enemyProjectile
+        proj.translateZ(-proj.userData.projectileSpeed)
+        proj.userData.frameState -= 1
+        if (proj.userData.frameState === 0) {
+            proj.userData.frameState = 4
+            proj.userData.currentFrame = animate(proj, proj.userData.frames, proj.userData.currentFrame)
+        }
+
+        if (proj.position.x >= map[0].width || proj.position.x < 0 || proj.position.z >= map.width || proj.position.z < 0) {
+            scene.remove(proj)
+            enemyProjectile = false
+            break
+        }
+
+        if (isWall(proj.position.x, proj.position.z)) {
+            scene.remove(proj)
+            weakenWall(proj.position.x, proj.position.z)
+            enemyProjectile = false
+            break
+        }
+
+        if (isSolid(proj.position.x, proj.position.z)) {
+            weakenWall(proj.position.x, proj.position.z)
+        }
+
+        const hitPosition = player.position.clone()
+        hitPosition.x += playerWidth / 2
+        if (hitPosition.distanceTo(proj.position) < (playerWidth + pixelSize) / 2) {
+            lives -= 1
+            scene.remove(proj)
+            enemyProjectile = false
+
+            if (lives === 0) {
+                gameOver()
+                return
+            }
+
+            groundPlane.material.color.setHex(0xFFFF0000)
+            hitState = 1            
+        }
+
+        break
+    }
+
+
+    // find next enemy
+    const enemy = findNextEnemy()
+    if (enemy) {
+        // animate enemy
+        animateEnemy(enemy)
+        
+        const enemyMoveUnit = pixelSize
+        switch (enemyMoveState.state) {
+            case 'left': enemy.translateX(enemyMoveUnit); break
+            case 'down': enemy.translateZ(-8 * enemyMoveUnit); break
+            case 'right': enemy.translateX(-enemyMoveUnit); break
+        }
+
+        if (enemy.position.z < 8) {
+            gameOver()
+            return
+        }
+    }
+
+    // set next animation frame
+    if (frame > enemyMoveState.nextStateAt) {
+        const { state, steps, nextState } = nextEnemyState(enemyMoveState.state, enemyMoveState.steps, enemyMoveState.nextState)
+        enemyMoveState.state = state
+        enemyMoveState.steps = steps
+        enemyMoveState.nextState = nextState
+        enemyMoveState.nextStateAt = frame + numEnemies
+        nextEnemy = 0
+    }
+
+    // animate ufo if visible
+    if (ufo.visible) {
+        if (frame > ufo.nextStateAt) {
+            const ufoMinSpeed = 0.13
+            // maximum speed is twice the minimum speed
+            const ufoSpeed = ufoMinSpeed + ufoMinSpeed * (maxEnemies - numEnemies) / maxEnemies
+            ufo.object.translateX(ufoSpeed)
+            ufo.nextStateAt = frame + 1
+        }
+        if (ufo.object.position.x > map[0].length - 1) {
+            ufo.visible = false
+            scene.remove(ufo.object)
+            delete ufo.object
+        }
+    }
+
+    // give extra life
+    if (lives < maxLives && score >= nextExtraLifeScore) {
+        lives += 1
+        nextExtraLifeScore += extraLifeScore
+    }
+
+    if (score > highScore) {
+        highScore = score
+    }
+
+    if (numEnemies === 0) {
+        winLevel()
+        return
+    }
+}
+
+function showSplashScreen() {
+    gameState = 'splashscreen'
+
+    scene.remove(player)
+
+    removeMap()
+    removeEnemies()
+
+    splashScreen = makeSplashScreen()
+    scene.add(splashScreen)
+
+    const bottom = document.getElementById('bottom')
+    bottom.innerHTML = ''
+    
+    // for mobile
+    const bottomDiv = document.createElement('div')
+    bottomDiv.onclick = () => startGame()
+    bottomDiv.innerText = 'PRESS <SPACE> TO START'
+    
+    bottom.appendChild(bottomDiv)
+}
+
+function startGame() {
+    gameState = 'gameplay'
+
+    scene.remove(splashScreen)
+
+    scene.add(player)
+
+    addMap()
+    addEnemies()
+    
+    lives = maxLives
+    score = 0
+    enemyMoveState = {
+        nextStateAt: 0,
+        state: 'left',
+        nextState: 'left',
+        steps: 0,
+    }
+    document.getElementById('bottom').innerHTML = ''
+}
+
+function gameOver() {
+    gameState = 'gameover'
+
+    document.getElementById('bottom').innerHTML = 'GAME OVER'
+
+    localStorage.setItem('highScore', highScore)
+}
+
+function winLevel() {
+    gameState = 'winlevel'
+
+    level++
+    document.getElementById('bottom').innerHTML = `LEVEL ${level} - PRESS SPACE`
+}
+
+function nextLevel() {
+    gameState = 'gameplay'
+
+    removeMap()
+    removeEnemies()
+    
+    addMap()
+    addEnemies()
+    
+    document.getElementById('bottom').innerHTML = ''
+}
+
+function pad4(n) {
+    return ('0000' + n).slice(-4)
+}
+
+// animation
+let frame = 0
+let lastFrameCount = 0
+let fps = 0
+function animation( time ) {
+    if (window.location.protocol === 'file:') {
+        if (debugCounter > 0) {
+            document.getElementById('debug').innerHTML = debug
+            debugCounter--
+        } else {
+            document.getElementById('debug').innerHTML = ''
+        }
+    }
+
+    ++frame
+    document.getElementById('overlay').innerHTML = `LIVES: ${lives} LEVEL: ${level} SCORE: ${pad4(score)} HI-SCORE: ${pad4(highScore)}` 
+    if (gameState === 'splashscreen') {
+        if (!splashScreen) {
+            showSplashScreen()
+        }
+    
+        if (keys.shoot) {
+            startGame()
+            keys.shoot = false
+        }
+    } else if (gameState === 'gameplay') {
+        if (paused) {
+            document.getElementById('bottom').innerText = 'PAUSED'
+            return
+        }
+        document.getElementById('bottom').innerText = ''
+        updateScene()
+    } else if (gameState === 'gameover') {
+        if (keys.shoot) {
+            keys.shoot = false
+            showSplashScreen()
+        }
+    } else if (gameState === 'winlevel') {
+        if (keys.shoot) {
+            keys.shoot = false
+            nextLevel()
+        }
+    }
+
+    renderer.render( scene, camera );
+}
+
+// fps counter
+setInterval(function() { 
+    fps = frame - lastFrameCount
+    lastFrameCount = frame
+}, 1000)
+
+</script>
